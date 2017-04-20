@@ -163,9 +163,11 @@ public class PersistenceProviderResolverHolder {
 				//problem #1: avoid hard ref with classloader (List<WR<PP>>?
 				//problem #2: avoid half GC lists
 				// todo (steve) : why arent we just caching the PersistenceProvider *instances* as the CachingPersistenceProviderResolver state???
-				List<WeakReference<Class<? extends PersistenceProvider>>> updatedResolverClasses = cachedResolverClasses.get();
-				do {
-					List<PersistenceProvider> providers = new ArrayList<PersistenceProvider>(updatedResolverClasses.size());
+                List<WeakReference<Class<? extends PersistenceProvider>>> updatedResolverClasses;
+                List<PersistenceProvider> providers;
+                do {
+                    updatedResolverClasses = cachedResolverClasses.get();
+                     providers = new ArrayList<PersistenceProvider>(updatedResolverClasses.size());
 					try {
 						for (WeakReference<Class<? extends PersistenceProvider>> providerClass : updatedResolverClasses) {
 							providers.add(providerClass.get().newInstance());
@@ -175,9 +177,9 @@ public class PersistenceProviderResolverHolder {
 					} catch (IllegalAccessException e) {
 						throw new PersistenceException(e);
 					}
-					return providers;
-				} while (cachedResolverClasses.compareAndSet(updatedResolverClasses, updatedResolverClasses));
-			}
+				} while (!cachedResolverClasses.compareAndSet(updatedResolverClasses, updatedResolverClasses));
+                return providers;
+            }
 
 			/**
 			 * {@inheritDoc}
