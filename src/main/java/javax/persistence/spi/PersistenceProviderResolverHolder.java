@@ -146,7 +146,6 @@ public class PersistenceProviderResolverHolder {
                             resolverClasses.add(reference);
                         }
                     }
-                    cachedResolverClasses.set(resolverClasses);
                 } catch (IOException e) {
                     throw new PersistenceException(e);
                 } catch (ClassNotFoundException e) {
