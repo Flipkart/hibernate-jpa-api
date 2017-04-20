@@ -16,12 +16,8 @@ import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.lang.ref.WeakReference;
 import java.net.URL;
-import java.util.ArrayList;
-import java.util.Enumeration;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Set;
-import java.util.WeakHashMap;
+import java.util.*;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -115,52 +111,48 @@ public class PersistenceProviderResolverHolder {
 		 */
 		private static class CachingPersistenceProviderResolver implements PersistenceProviderResolver {
 			//this assumes that the class loader keeps the list of classes loaded
-			private final List<WeakReference<Class<? extends PersistenceProvider>>> resolverClasses
-					= new ArrayList<WeakReference<Class<? extends PersistenceProvider>>>();
+            private final AtomicReference<List<WeakReference<Class<? extends PersistenceProvider>>>> cachedResolverClasses
+                    = new AtomicReference<List<WeakReference<Class<? extends PersistenceProvider>>>>();
 
 			public CachingPersistenceProviderResolver(ClassLoader cl) {
-				loadResolverClasses( cl );
+                cachedResolverClasses.set(loadResolverClasses( cl ));
 			}
 
-			private void loadResolverClasses(ClassLoader cl) {
-				synchronized ( resolverClasses ) {
-					try {
-						Enumeration<URL> resources = cl.getResources( "META-INF/services/" + PersistenceProvider.class.getName() );
-						Set<String> names = new HashSet<String>();
-						while ( resources.hasMoreElements() ) {
-							URL url = resources.nextElement();
-							InputStream is = url.openStream();
-							try {
-								names.addAll( providerNamesFromReader( new BufferedReader( new InputStreamReader( is ) ) ) );
-							}
-							finally {
-								is.close();
-							}
-						}
-						for ( String s : names ) {
-							@SuppressWarnings( "unchecked" )
-							Class<? extends PersistenceProvider> providerClass = (Class<? extends PersistenceProvider>) cl.loadClass( s );
-							WeakReference<Class<? extends PersistenceProvider>> reference
-									= new WeakReference<Class<? extends PersistenceProvider>>(providerClass);
-							//keep Hibernate atop
-							if ( s.endsWith( "HibernatePersistence" ) && resolverClasses.size() > 0 ) {
-								WeakReference<Class<? extends PersistenceProvider>> movedReference = resolverClasses.get( 0 );
-								resolverClasses.add( 0, reference );
-								resolverClasses.add( movedReference );
-							}
-							else {
-								resolverClasses.add( reference );
-							}
-						}
-					}
-					catch ( IOException e ) {
-						throw new PersistenceException( e );
-					}
-					catch ( ClassNotFoundException e ) {
-						throw new PersistenceException( e );
-					}
-				}
-			}
+            private List<WeakReference<Class<? extends PersistenceProvider>>> loadResolverClasses(ClassLoader cl) {
+                List<WeakReference<Class<? extends PersistenceProvider>>> resolverClasses = new ArrayList<WeakReference<Class<? extends PersistenceProvider>>>();
+                try {
+                    Enumeration<URL> resources = cl.getResources("META-INF/services/" + PersistenceProvider.class.getName());
+                    Set<String> names = new HashSet<String>();
+                    while (resources.hasMoreElements()) {
+                        URL url = resources.nextElement();
+                        InputStream is = url.openStream();
+                        try {
+                            names.addAll(providerNamesFromReader(new BufferedReader(new InputStreamReader(is))));
+                        } finally {
+                            is.close();
+                        }
+                    }
+                    for (String s : names) {
+                        @SuppressWarnings("unchecked")
+                        Class<? extends PersistenceProvider> providerClass = (Class<? extends PersistenceProvider>) cl.loadClass(s);
+                        WeakReference<Class<? extends PersistenceProvider>> reference
+                                = new WeakReference<Class<? extends PersistenceProvider>>(providerClass);
+                        //keep Hibernate atop
+                        if (s.endsWith("HibernatePersistence") && resolverClasses.size() > 0) {
+                            WeakReference<Class<? extends PersistenceProvider>> movedReference = resolverClasses.get(0);
+                            resolverClasses.add(0, reference);
+                            resolverClasses.add(movedReference);
+                        } else {
+                            resolverClasses.add(reference);
+                        }
+                    }
+                } catch (IOException e) {
+                    throw new PersistenceException(e);
+                } catch (ClassNotFoundException e) {
+                    throw new PersistenceException(e);
+                }
+                return resolverClasses;
+            }
 
 			/**
 			 * {@inheritDoc}
@@ -170,32 +162,35 @@ public class PersistenceProviderResolverHolder {
 				//problem #1: avoid hard ref with classloader (List<WR<PP>>?
 				//problem #2: avoid half GC lists
 				// todo (steve) : why arent we just caching the PersistenceProvider *instances* as the CachingPersistenceProviderResolver state???
-				synchronized ( resolverClasses ) {
-					List<PersistenceProvider> providers = new ArrayList<PersistenceProvider>( resolverClasses.size() );
+                List<WeakReference<Class<? extends PersistenceProvider>>> updatedResolverClasses;
+                List<PersistenceProvider> providers;
+                do {
+                    updatedResolverClasses = cachedResolverClasses.get();
+                    providers = new ArrayList<PersistenceProvider>(updatedResolverClasses.size());
 					try {
-						for ( WeakReference<Class<? extends PersistenceProvider>> providerClass : resolverClasses ) {
-							providers.add( providerClass.get().newInstance() );
+						for (WeakReference<Class<? extends PersistenceProvider>> providerClass : updatedResolverClasses) {
+							providers.add(providerClass.get().newInstance());
 						}
+					} catch (InstantiationException e) {
+						throw new PersistenceException(e);
+					} catch (IllegalAccessException e) {
+						throw new PersistenceException(e);
 					}
-					catch ( InstantiationException e ) {
-						throw new PersistenceException( e );
-					}
-					catch ( IllegalAccessException e ) {
-						throw new PersistenceException( e );
-					}
-					return providers;
-				}
-			}
+				} while (!cachedResolverClasses.compareAndSet(updatedResolverClasses, updatedResolverClasses));
+                return providers;
+            }
 
 			/**
 			 * {@inheritDoc}
 			 */
-			public synchronized void clearCachedProviders() {
-				synchronized ( resolverClasses ) {
-					resolverClasses.clear();
-					loadResolverClasses( PersistenceProviderResolverPerClassLoader.getContextualClassLoader() );
-				}
-			}
+            public void clearCachedProviders() {
+                List<WeakReference<Class<? extends PersistenceProvider>>> oldResolverClasses;
+                List<WeakReference<Class<? extends PersistenceProvider>>> newResolverClasses;
+                do {
+                    oldResolverClasses = cachedResolverClasses.get();
+                    newResolverClasses = loadResolverClasses(PersistenceProviderResolverPerClassLoader.getContextualClassLoader());
+                } while (!cachedResolverClasses.compareAndSet(oldResolverClasses, newResolverClasses));
+            }
 
 
 			private static final Pattern nonCommentPattern = Pattern.compile( "^([^#]+)" );
