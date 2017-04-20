@@ -111,16 +111,15 @@ public class PersistenceProviderResolverHolder {
 		 */
 		private static class CachingPersistenceProviderResolver implements PersistenceProviderResolver {
 			//this assumes that the class loader keeps the list of classes loaded
-			private final List<WeakReference<Class<? extends PersistenceProvider>>> resolverClasses
-					= new ArrayList<WeakReference<Class<? extends PersistenceProvider>>>();
             private final AtomicReference<List<WeakReference<Class<? extends PersistenceProvider>>>> cachedResolverClasses
                     = new AtomicReference<List<WeakReference<Class<? extends PersistenceProvider>>>>();
 
 			public CachingPersistenceProviderResolver(ClassLoader cl) {
-				loadResolverClasses( cl );
+                cachedResolverClasses.set(loadResolverClasses( cl ));
 			}
 
-            private synchronized void loadResolverClasses(ClassLoader cl) {
+            private List<WeakReference<Class<? extends PersistenceProvider>>> loadResolverClasses(ClassLoader cl) {
+                List<WeakReference<Class<? extends PersistenceProvider>>> resolverClasses = new ArrayList<WeakReference<Class<? extends PersistenceProvider>>>();
                 try {
                     Enumeration<URL> resources = cl.getResources("META-INF/services/" + PersistenceProvider.class.getName());
                     Set<String> names = new HashSet<String>();
@@ -153,6 +152,7 @@ public class PersistenceProviderResolverHolder {
                 } catch (ClassNotFoundException e) {
                     throw new PersistenceException(e);
                 }
+                return resolverClasses;
             }
 
 			/**
@@ -167,7 +167,7 @@ public class PersistenceProviderResolverHolder {
                 List<PersistenceProvider> providers;
                 do {
                     updatedResolverClasses = cachedResolverClasses.get();
-                     providers = new ArrayList<PersistenceProvider>(updatedResolverClasses.size());
+                    providers = new ArrayList<PersistenceProvider>(updatedResolverClasses.size());
 					try {
 						for (WeakReference<Class<? extends PersistenceProvider>> providerClass : updatedResolverClasses) {
 							providers.add(providerClass.get().newInstance());
@@ -184,10 +184,13 @@ public class PersistenceProviderResolverHolder {
 			/**
 			 * {@inheritDoc}
 			 */
-            public synchronized void clearCachedProviders() {
-                cachedResolverClasses.get().clear();
-                loadResolverClasses(PersistenceProviderResolverPerClassLoader.getContextualClassLoader());
-
+            public void clearCachedProviders() {
+                List<WeakReference<Class<? extends PersistenceProvider>>> oldResolverClasses;
+                List<WeakReference<Class<? extends PersistenceProvider>>> newResolverClasses;
+                do {
+                    oldResolverClasses = cachedResolverClasses.get();
+                    newResolverClasses = loadResolverClasses(PersistenceProviderResolverPerClassLoader.getContextualClassLoader());
+                } while (!cachedResolverClasses.compareAndSet(oldResolverClasses, newResolverClasses));
             }
 
 
